@@ -308,6 +308,87 @@ if (method === "GET" && url.pathname === "/api/manox/user/tag-visibility") {
         tagVisible: true 
     });
 }
+
+// 1. CONSULTAR VERSÃO ATUAL DO HUB (GET)
+if (method === "GET" && url.pathname === "/api/manox/version") {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/hub_version?id=eq.1&select=version,updated_at`, { headers });
+    const data = await res.json();
+
+    if (Array.isArray(data) && data.length > 0) {
+        return jsonResponse({ success: true, version: data[0].version, updatedAt: data[0].updated_at });
+    }
+
+    return jsonResponse({ success: true, version: "4.4.1", updatedAt: now });
+}
+
+// 2. ATUALIZAR / INCREMENTAR VERSÃO DO HUB (POST)
+if (method === "POST" && url.pathname === "/api/manox/version/update") {
+    if (!checkAdminKey()) return jsonResponse({ success: false, message: "Não autorizado" }, 401);
+
+    const { type, manualVersion } = await getBody();
+
+    // Busca a versão atual do banco
+    const currentRes = await fetch(`${SUPABASE_URL}/rest/v1/hub_version?id=eq.1&select=version`, { headers });
+    const currentData = await currentRes.json();
+    let currentVersion = (Array.isArray(currentData) && currentData.length > 0) ? currentData[0].version : "4.4.1";
+
+    let newVersion = currentVersion;
+
+    if (manualVersion) {
+        // Se enviou uma versão específica (ex: "5.0.0")
+        newVersion = manualVersion.trim();
+    } else if (type) {
+        // Separa os números da versão atual [MAJOR, MINOR, PATCH]
+        let parts = currentVersion.split('.').map(num => parseInt(num, 10) || 0);
+        if (parts.length < 3) parts = [4, 4, 1];
+
+        if (type === "patch") {
+            // Bugs corrigidos (+0.0.1) -> 4.4.1 vira 4.4.2
+            parts[2] += 1;
+        } else if (type === "minor") {
+            // Atualização (+0.1.0) -> 4.4.1 vira 4.5.0
+            parts[1] += 1;
+            parts[2] = 0;
+        } else if (type === "major") {
+            // Atualização grande (+1.0.0) -> 4.4.1 vira 5.0.0
+            parts[0] += 1;
+            parts[1] = 0;
+            parts[2] = 0;
+        } else {
+            return jsonResponse({ success: false, message: "Tipo inválido. Use 'patch', 'minor' ou 'major'." }, 400);
+        }
+
+        newVersion = parts.join('.');
+    } else {
+        return jsonResponse({ success: false, message: "Forneça o 'type' ('patch', 'minor', 'major') ou 'manualVersion'." }, 400);
+    }
+
+    // Salva a nova versão no Supabase
+    const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/hub_version`, {
+        method: "POST",
+        headers: { 
+            ...headers, 
+            "Prefer": "resolution=merge-duplicates,return=representation" 
+        },
+        body: JSON.stringify({ 
+            id: 1, 
+            version: newVersion, 
+            updated_at: now 
+        })
+    });
+
+    if (!updateRes.ok) {
+        const errText = await updateRes.text();
+        return jsonResponse({ success: false, message: "Erro ao atualizar versão no banco.", details: errText }, 500);
+    }
+
+    return jsonResponse({ 
+        success: true, 
+        oldVersion: currentVersion, 
+        newVersion: newVersion, 
+        updatedAt: now 
+    });
+}
     
         return jsonResponse({ success: false, message: "Rota não encontrada" }, 404);
     }
